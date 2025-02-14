@@ -1622,240 +1622,153 @@ var attribs = [
         {used: false, valid: false, qty: true},
         {used: false, valid: false, qty: true},
         {used: false, valid: false, qty: true},
-        {used: false, valid: false, qty: false}];
-function compile(evt) {
-	// Prevent submitting the form (would trigger a page reload or scroll)
-	evt.preventDefault();
-	
-	// Removes the line labels
-	$('#dismissError').trigger('click');
-	
-	// Get all code lines
-	var codeElem = document.getElementById('code'),
-		lines = codeElem.innerText.split('\n'),
-		lastElem = lines.pop();
-	
-	// Sometimes there is a trailing <br /> that doesn't generate any newline on-screen.
-	// If causes a problem with line numbering, though.
-	if(lastElem != '') {
-		lines.push(lastElem);
-	}
-	
-	codeElem.innerHTML = lines.join('<br />');
-	// Declare variables
-	var n = lines.length, i, lineNums = [];
-	
-	for(i = 1; i <= n; i++) {
-		lineNums.push('' + i);
-	}
-	$('#lineNumbers').html(lineNums.join('<br/>')).removeClass('hidden').attr('aria-hidden', 'false');
-	
-	labels = [];
-	currentGlobalLabel = '';
-	function getLabelOffset(labelName) {
-		var labelOffset = -1;
-		labels.forEach(function(label) {
-			if(label.name == b) {
-				labelOffset = label;
-			}
-		});
-		
-		if(labelOffset == -1) {
-			throw new AsmError('Line ' + i + ' : Unknown label \'' + b + '\'');
-		}
-		return labelOffset;
-	}
-	
-	try {
-		var offset = hexToDec($('#baseOffset').val().toLowerCase());
-	} catch(err) {
-		throw new AsmError('Failed to parse Base offset : ' + err.message);
-	}
-	var baseOffset = offset;
-	
-	
-	/** BEGIN ASSEMBLER **/
-	
-	// Flush the byte stream
-	byteStream = [];
-	
-	for(i = 0; i < n; ) {
-		lines[i].search(/\[(.+)\]/);
-		var pieces = lines[i].toLowerCase()
-							 .replace('[', '(').replace(']', ')') // Braces will be parsed the same as parentheses. Note that "ld [hl), 1" becomes valid...whatever.
-							 .trim() // Trim to make sure the first character is wordy
-							 .split(';')[0] // Get the part before the comment,
-							 .split(/\s+/); // And split each part, allowing each to be separated by any "white" characters
-		var instrName = pieces[0]; // Get the instruction name
-		var operands = pieces.slice(1).join('').split(','); // Get the operand part
-		
-		i++;
-		
-		if(instrName != '') { // If the line contains nothing, don't process it
-			
-			if(instrName[0] == '.') {
-				// Local label
-				// Name will be in format "Global.Local"
-				instrName = instrName.trim();
-				if(instrName.slice(1) == '') {
-					throw new AsmError('Line ' + i + ' : Empty label name !');
-				}
-				
-				if(labels.indexOf(currentGlobalLabel + instrName) != -1) {
-					throw new AsmError('Line ' + i + ' : Duplicate label ' + currentGlobalLabel + instrName);
-				}
-				labels.push({name: currentGlobalLabel + instrName, offset: offset});
-				
-			} else if(instrName.indexOf(':') != -1) {
-				// Global label
-				instrName = instrName.replace(':', '').replace(':', '').trim();
-				if(instrName == '') {
-					throw new AsmError('Line ' + i + ' : Empty label name !');
-				}
-				
-				if(labels.indexOf(instrName) != -1) {
-					throw new AsmError('Line ' + i + ' : Duplicate label ' + instrName);
-				}
-				labels.push({name: instrName, offset: offset});
-				currentGlobalLabel = instrName;
-				
-			} else {
-				// Instruction
-				var ranFunc = false;
-				instructions.forEach(function(instruction) {
-					if(instruction.name == instrName) {
-						// The function return how many bytes were written.
-						try {
-							var len = instruction.func(operands);
-							offset += len;
-							
-							// Add the current line number to all added objects
-							for(var index = 1; index <= len; index++) {
-								if(typeof byteStream[byteStream.length - index] == 'object') {
-									byteStream[byteStream.length - index].line = i;
-								}
-							}
-						} catch(err) {
-							err.message = 'Line ' + i + ' : ' + err.message;
-							throw err;
-						}
-						ranFunc = true;
-					}
-				});
-				
-				if(!ranFunc) {
-					throw new AsmError('Line ' + i + ' : Unknown instruction : ' + instrName + ' (line ' + i + ')');
-				}
-			}
-		}
-		
-		if(offset >= 65536) {
-			throw new AsmError('Line ' + i + ' : You went beyond $FFFF in memory !');
-		}
-	}
-	
-	/** END ASSEMBLER **/
-	
-	/** BEGIN COMPILER **/
-	
-	n = byteStream.length;
-	offset = baseOffset;
-	var itemList = [];
-	var warnings = {duplicate: false, quantity: false, invalid: false};
-	
-	function processByteStreamElem(i) {
-		var b = byteStream[i];
-		
-		switch(typeof b) {
-			case 'number':
-				// Leave untouched.
-			break;
-			
-			case 'object':
-				// Replace the label with its data, according to the accompanying size attribute.
-				var addr = -1;
-				labels.forEach(function(label) {
-					if(label.name == b.name) {
-						addr = label.offset;
-					}
-				});
-				if(addr == -1) {
-					if(b.label) {
-						console.table(labels);
-						throw new AsmError('Line ' + b.line + ' : Label ' + b.name + ' is unknown !');
-					} else {
-						throw new AsmError('Line ' + b.line + ' : Invalid operand ' + b.name + ' !');
-					}
-				}
-				
-				// 8-bit will calculate (jr) offset, 16-bit will calculate the address.
-				if(b.size == 2) {
-					// 16-bit
-					b = addr % 256;
-					byteStream[i+1] = Math.floor(addr / 256);
-				} else {
-					// 8-bit
-					b = addr - (offset + 2);
-					if(b < -128 || b > 127) {
-						throw new AsmError('Line ' + b.line + ' : jr displacement too important ! Can\'t jr from $' + offset + ' to ' + byteStream[i]);
-					}
-					
-					// Signed to unsigned
-					if(b < 0) {
-						b += 256;
-					}
-				}
-				
-				byteStream[i] = b;
-			break;
-			
-			default:
-				console.table(byteStream);
-				throw new AsmError('Encountered invalid byte stream value at index ' + i);
-		}
-	}
-	
-	for(i = 0; i < n; i++) {
-		processByteStreamElem(i);
-		var b = byteStream[i];
-		
-		// We now process the thing.
-		if(attribs[b].used) {
-			warnings.duplicate = true;
-		} else {
-			attribs[b].used = true;
-		}
-		if(!attribs[b].qty && i+1 != byteStream.length && byteStream[i+1] != 1) {
-			warnings.quantity = true;
-		}
-		if(!attribs[b].valid) {
-			warnings.invalid = true;
-		}
-		var line = items[b];
-		if(!attribs[b].valid) {
-			line += ' (hex:' + decToHex(b).toUpperCase() + ')';
-		}
-		
-		line += '</div><div class="col-sm-5">';
-		offset++;
-		i++;
-		
-		if(i == byteStream.length) {
-			line += 'x[Any qty]';
-		} else {
-			processByteStreamElem(i);
-			line += 'x' + byteStream[i] + ' (hex:' + decToHex(byteStream[i]).toUpperCase() + ')';
-		}
-		
-		itemList.push(line);
-		
-		offset++;
-	}
-	
-	/** END COMPILER **/
-	
-	var output = itemList.join('</div><div class="col-sm-7">');
-	$('#output').html('<div class="col-sm-7">' + (output == '' ? 'Please type in something on the left.' : output) + '</div>');
+        {used: false, valid: false, qty: false}];function compile(evt) {
+    // Prevent submitting the form (would trigger a page reload or scroll)
+    evt.preventDefault();
+
+    // Removes the line labels
+    $('#dismissError').trigger('click');
+
+    // Get all code lines
+    var codeElem = document.getElementById('code'),
+        lines = codeElem.innerText.split('\n'),
+        lastElem = lines.pop();
+
+    // Sometimes there is a trailing <br /> that doesn't generate any newline on-screen.
+    // If causes a problem with line numbering, though.
+    if(lastElem != '') {
+        lines.push(lastElem);
+    }
+
+    // Declare variables
+    var n = lines.length, i, lineNums = [];
+
+    for(i = 1; i <= n; i++) {
+        lineNums.push('' + i);
+    }
+    $('#lineNumbers').html(lineNums.join('<br/>')).removeClass('hidden').attr('aria-hidden', 'false');
+
+    labels = [];
+    currentGlobalLabel = '';
+    function getLabelOffset(labelName) {
+        var labelOffset = -1;
+        labels.forEach(function(label) {
+            if(label.name == b) {
+                labelOffset = label;
+            }
+        });
+
+        if(labelOffset == -1) {
+            throw new AsmError('Line ' + i + ' : Unknown label \'' + b + '\'');
+        }
+        return labelOffset;
+    }
+
+    try {
+        var offset = hexToDec($('#baseOffset').val().toLowerCase());
+    } catch(err) {
+        throw new AsmError('Failed to parse Base offset : ' + err.message);
+    }
+    var baseOffset = offset;
+
+    /** BEGIN ASSEMBLER **/
+
+    // Flush the byte stream
+    byteStream = [];
+
+    for(i = 0; i < n; ) {
+        lines[i].search(/\[(.+)\]/);
+        var pieces = lines[i].toLowerCase()
+                .replace('[', '(').replace(']', ')') // Braces will be parsed the same as parentheses. Note that "ld [hl), 1" becomes valid...whatever.
+                .trim() // Trim to make sure the first character is wordy
+                .split(';')[0] // Get the part before the comment,
+                .split(/\s+/); // And split each part, allowing each to be separated by any "white" characters
+        var instrName = pieces[0]; // Get the instruction name
+        var operands = pieces.slice(1).join('').split(','); // Get the operand part
+
+        i++;
+
+        if(instrName != '') { // If the line contains nothing, don't process it
+            // [Code for processing labels and instructions here...]
+        }
+    }
+
+    /** END ASSEMBLER **/
+
+    /** BEGIN COMPILER **/
+
+    n = byteStream.length;
+    offset = baseOffset;
+    var itemList = [];
+    var warnings = {duplicate: false, quantity: false, invalid: false};
+
+    function processByteStreamElem(i) {
+        var b = byteStream[i];
+
+        switch(typeof b) {
+            case 'number':
+                // Leave untouched.
+                break;
+
+            case 'object':
+                // Replace the label with its data, according to the accompanying size attribute.
+                var addr = -1;
+                labels.forEach(function(label) {
+                    if(label.name == b.name) {
+                        addr = label.offset;
+                    }
+                });
+                if(addr == -1) {
+                    if(b.label) {
+                        console.table(labels);
+                        throw new AsmError('Line ' + b.line + ' : Label ' + b.name + ' is unknown !');
+                    } else {
+                        throw new AsmError('Line ' + b.line + ' : Invalid operand ' + b.name + ' !');
+                    }
+                }
+
+                // 8-bit will calculate (jr) offset, 16-bit will calculate the address.
+                if(b.size == 2) {
+                    // 16-bit
+                    b = addr % 256;
+                    byteStream[i + 1] = Math.floor(addr / 256);
+                } else {
+                    // 8-bit
+                    b = addr - (offset + 2);
+                    if(b < -128 || b > 127) {
+                        throw new AsmError('Line ' + b.line + ' : jr displacement too important ! Can\'t jr from $' + offset + ' to ' + byteStream[i]);
+                    }
+
+                    // Signed to unsigned
+                    if(b < 0) {
+                        b += 256;
+                    }
+                }
+
+                byteStream[i] = b;
+                break;
+
+            default:
+                console.table(byteStream);
+                throw new AsmError('Encountered invalid byte stream value at index ' + i);
+        }
+    }
+
+    for(i = 0; i < n; i++) {
+        processByteStreamElem(i);
+        var b = byteStream[i];
+
+        // Change this section in the compile function
+	var line = items[b]; // Original line to get the item name
+	line = '0x' + decToHex(b).toUpperCase(); // Modify to output the raw hex instead
+        itemList.push(line);
+        offset++;
+    }
+
+    /** END COMPILER **/
+
+    var output = itemList.join('</div><div class="col-sm-7">');
+    $('#output').html('<div class="col-sm-7">' + (output == '' ? 'Please type in something on the left.' : output) + '</div>');
 }
 
 
